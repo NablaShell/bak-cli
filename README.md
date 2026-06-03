@@ -12,7 +12,7 @@ A paranoid-grade CLI tool for packing any directory into a single encrypted bina
 ---
 
 ##  Why bak-cli?
-```
+
 | Feature | bak-cli | tar + gpg | 7z | VeraCrypt |
 |---------|---------|-----------|----|-----------|
 | **Zero-Branding** | ✅ No magic bytes | ❌ Tar headers visible | ❌ "7z" signature | ❌ VC volume header |
@@ -23,7 +23,7 @@ A paranoid-grade CLI tool for packing any directory into a single encrypted bina
 | **Single Binary Output** | ✅ One file | ✅ One file | ✅ | ❌ Container |
 | **KDF** | Argon2id (64MB) | ⚠️ Varies | ⚠️ PBKDF2 | PBKDF2/RIPEMD |
 | **No External Dependencies** | ✅ Pure Go | System tools | System tools | Kernel module |
-```
+
 **Key differentiator:** If someone finds your `vault.bak`, it looks like `/dev/urandom` output. There are no headers, no magic numbers, no structure visible without the password. Even the file size reveals nothing — it's indistinguishable from random data of the same length.
 
 ---
@@ -32,57 +32,69 @@ A paranoid-grade CLI tool for packing any directory into a single encrypted bina
 
 ### Encryption Pipeline
 ```
-User Password
-│
-▼
-┌─────────────┐ ┌──────────────────┐
-│ Argon2id │────▶│ XChaCha20- │
-│ Memory: 64MB │ │ Poly1305 Key │
-│ Time: 3 │ │ (256-bit) │
-│ Threads: 2 │ └────────┬─────────┘
-└─────────────┘ │
-▼
-┌──────────────────┐ ┌──────────────┐
-│ Salt (16 bytes) │ │ Plaintext │
-│ Random │ │ Payload │
-└──────────────────┘ └──────┬───────┘
-│
-▼
-┌─────────────────┐
-│ XChaCha20- │
-│ Poly1305 Seal │
-│ (24-byte nonce) │
-└────────┬────────┘
-│
-▼
-┌──────────────────────────┐
-│ vault.bak (random bytes) │
-│ [Salt][Nonce+Ciphertext] │
-└──────────────────────────┘
+       ┌─────────────────┐
+       |  User Password  |
+       └────────┬────────┘
+                │
+                ▼
+      ┌─────────────────┐
+      │    Argon2id     │
+      │  Memory: 64MB   │
+      │    Time: 3      │
+      │   Threads: 2    │
+      └────────┬────────┘
+               │
+               │ (Derive Key)
+               ▼
+┌──────────────────────────────┐
+│  XChaCha20-Poly1305 Key      │
+│          (256-bit)           │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐       ┌──────────────────────────────┐
+│       Salt (16 bytes)        │       │      Plaintext Payload       │
+│        Secure Random         │       │        (Packed Data)         │
+└──────────────┬───────────────┘       └──────────────┬───────────────┘
+               │                                      │
+               └───────────────────┬──────────────────┘
+                                   │
+                                   ▼
+                       ┌───────────────────────┐
+                       │ XChaCha20-Poly1305    │
+                       │ AEAD Seal Operation   │
+                       │ (24-byte random nonce)│
+                       └───────────┬───────────
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+                      │ vault.bak (random bytes) │
+                      │ [Salt][Nonce+Ciphertext] │
+                      └──────────────────────────┘
 ```
 
 
 ### Internal Payload Structure (Inside Encrypted Block)
 ```
-┌────────────────────────────────────────────────┐
-│ DirName Length │ 4 bytes │ BigEndian uint32 │
-├────────────────────────────────────────────────┤
-│ DirName │ N bytes │ Original folder │
-│ │ │ name (UTF-8) │
-├────────────────────────────────────────────────┤
-│ SHA-512 Hash │ 64 bytes │ Integrity check │
-│ │ │ of file payload │
-├────────────────────────────────────────────────┤
-│ Magic Separator │ 4 bytes │ 0x0BADC0DE │
-├────────────────────────────────────────────────┤
-│ File Entry 1 │
-│ ├─ PathLen │ 4 bytes │
-│ ├─ Path │ N bytes │
-│ ├─ DataSize │ 8 bytes │
-│ └─ Data │ N bytes │
-├────────────────────────────────────────────────┤
-│ File Entry 2... │
-└────────────────────────────────────────────────┘
+┌──────────────────┬───────────┬────────────────────────────────────────┐
+│      FIELD       │   SIZE    │              DESCRIPTION               │
+├──────────────────┼───────────┼────────────────────────────────────────┤
+│ DirName Length   │  4 bytes  │ BigEndian uint32                       │
+├──────────────────┼───────────┼────────────────────────────────────────┤
+│ DirName          │  N bytes  │ Original folder name (UTF-8)           │
+├──────────────────┼───────────┼────────────────────────────────────────┤
+│ SHA-512 Hash     │ 64 bytes  │ Integrity check of file payload        │
+├──────────────────┼───────────┼────────────────────────────────────────┤
+│ Magic Separator  │  4 bytes  │ 0x0BADC0DE                             │
+├──────────────────┴───────────┴────────────────────────────────────────┤
+│ File Entry 1                                                          │
+│  ├─ PathLen      │  4 bytes  │ BigEndian uint32                       │
+│  ├─ Path         │  N bytes  │ Relative file path (UTF-8)             │
+│  ├─ DataSize     │  8 bytes  │ BigEndian uint64                       │
+│  └─ Data         │  N bytes  │ Raw file content                       │
+├───────────────────────────────────────────────────────────────────────┤
+│ File Entry 2... (Repeats until EOF)                                   │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 The **magic separator** `0x0BADC0DE` helps detect structural corruption early, and the **SHA-512 hash** ensures not a single byte was tampered with — even before you notice missing files.
@@ -114,36 +126,34 @@ func Burn(data []byte) {
     runtime.KeepAlive(data) // Prevents compiler optimization
 }
 ```
-    mlock() prevents sensitive data from being paged to disk (swap)
+- mlock() prevents sensitive data from being paged to disk (swap)
 
-    Burn() zeroes memory immediately after use, with compiler optimization guard
+- Burn() zeroes memory immediately after use, with compiler optimization guard
 
-    All sensitive data uses []byte, never string (Go strings are immutable and linger in memory)
+- All sensitive data uses []byte, never string (Go strings are immutable and linger in memory)
 
-3. AEAD with XChaCha20-Poly1305
+### 3. AEAD with XChaCha20-Poly1305
 
-    24-byte nonce — safe for encrypting terabytes of data without nonce reuse risk
+- 24-byte nonce — safe for encrypting terabytes of data without nonce reuse risk
 
-    Poly1305 authentication tag — any tampering or wrong password is detected immediately
+- Poly1305 authentication tag — any tampering or wrong password is detected immediately
 
-    Constant-time MAC verification — no timing side-channels on auth check
+- Constant-time MAC verification — no timing side-channels on auth check
 
-4. Argon2id Key Derivation
-```text
+### 4. Argon2id Key Derivation
 
 Memory: 64 MB
 Iterations: 3
 Parallelism: 2
 
-    Memory-hard function resistant to GPU/ASIC attacks
+- Memory-hard function resistant to GPU/ASIC attacks
 
-    64MB makes parallel brute-force expensive (~1GB per 16 attempts on GPU)
+- 64MB makes parallel brute-force expensive (~1GB per 16 attempts on GPU)
 
-    Argon2id variant protects against both side-channel and time-memory tradeoff attacks
-```
-5. Duress Mode
+- Argon2id variant protects against both side-channel and time-memory tradeoff attacks
+
+### 5. Duress Mode
 ```bash
-
 # Set a panic password when creating:
 ./bak-cli --lock ~/secrets --output vault.bak
 
@@ -157,38 +167,36 @@ When the duress password is entered, the vault file is immediately overwritten w
 
 After encryption, the original directory is wiped using a 3-pass overwrite:
 
-    Pass 1: Random bytes
+- Pass 1: Random bytes
 
-    Pass 2: Random bytes (different)
+- Pass 2: Random bytes (different)
 
-    Pass 3: Zeroes
+- Pass 3: Zeroes
 
 Each pass calls fsync() to ensure data hits the physical medium. Then os.RemoveAll() is called. This makes recovery via filesystem journaling or magnetic remnant analysis significantly harder.
- Installation
-From Source (Recommended)
+## Installation
+### From Source (Recommended)
 ```bash
-
 git clone https://github.com/NablaShell/bak-cli.git
 cd bak-cli
 go build -o bak-cli
 sudo mv bak-cli /usr/local/bin/
 ```
-Requirements
+### Requirements
 
     Go 1.26+ (uses new -Xnodwarf5 features)
 
     Linux/macOS (uses unix.Mlock, syscall.Stdin)
 
-Dependencies
+### Dependencies
 
     golang.org/x/crypto — Argon2id + XChaCha20-Poly1305
 
     golang.org/x/term — Hidden password input
 
- Usage
-Lock (Seal) a Directory
+## Usage
+### Lock (Seal) a Directory
 ```bash
-
 # Basic usage
 ./bak-cli --lock ~/my-obsidian-vault
 
@@ -200,25 +208,24 @@ Lock (Seal) a Directory
 ```
 What happens:
 
-    Recursively reads all files in the directory
+- Recursively reads all files in the directory
 
-    Stores the directory name in metadata
+- Stores the directory name in metadata
 
-    Computes SHA-512 integrity hash
+- Computes SHA-512 integrity hash
 
-    Asks for password (hidden input) + confirmation
+- Asks for password (hidden input) + confirmation
 
-    Derives key via Argon2id
+- Derives key via Argon2id
 
-    Encrypts everything with XChaCha20-Poly1305
+- Encrypts everything with XChaCha20-Poly1305
 
-    Writes vault.bak (pure random bytes)
+- Writes vault.bak (pure random bytes)
 
-    Securely wipes the original directory (3-pass overwrite + delete)
+- Securely wipes the original directory (3-pass overwrite + delete)
 
-Unlock (Reveal) a Vault
+### Unlock (Reveal) a Vault
 ```bash
-
 # Basic unlock
 ./bak-cli --unlock vault.bak
 
@@ -230,37 +237,35 @@ Unlock (Reveal) a Vault
 ```
 What happens:
 
-    Reads salt from the first 16 bytes
+- Reads salt from the first 16 bytes
 
-    Asks for password
+- Asks for password
 
-    If password == duress password → immediate secure wipe of vault
+- If password == duress password → immediate secure wipe of vault
 
-    Derives key via Argon2id
+- Derives key via Argon2id
 
-    Attempts decryption + Poly1305 authentication
+- Attempts decryption + Poly1305 authentication
 
-    If auth fails → exit(1) with no further info (anti-bruteforce)
+- If auth fails → exit(1) with no further info (anti-bruteforce)
 
-    Verifies SHA-512 integrity of payload
+- Verifies SHA-512 integrity of payload
 
-    Recreates directory structure with original folder name
+- Recreates directory structure with original folder name
 
-    Restores all files with original permissions
+- Restores all files with original permissions
 
-Emergency Duress
+### Emergency Duress
 ```bash
-
 # Scenario: You're forced to decrypt your vault
 # Pre-configure a duress password:
 ./bak-cli --unlock vault.bak --duress "i-swear-this-is-the-real-password"
 # Type the duress password when prompted
 # Result: Vault is destroyed, original data stays safe (it was already wiped during lock)
 ```
- Verification & Testing
-Check Vault Integrity (Without Decrypting)
+## Verification & Testing
+### Check Vault Integrity (Without Decrypting)
 ```bash
-
 # Structural check (salt presence, minimum size)
 ./bak-cli --inspect vault.bak
 ```
@@ -276,9 +281,8 @@ salt                    : a1b2c3d4e5f6a7b8...
 encrypted_data_size     : 42700000
 encrypted_checksum      : f3a21c9b...
 ```
-Verify Restoration
+### Verify Restoration
 ```bash
-
 # Lock with verbose
 ./bak-cli --lock ~/test-data --verbose
 # Output: SHA-512: d4e5f6a7b8c9...
@@ -288,9 +292,8 @@ Verify Restoration
 # Output: Integrity hash: d4e5f6a7b8c9...
 # Hashes match → data intact
 ```
-🏗️Architecture
+## Architecture
 ```text
-
 bak-cli/
 ├── main.go          # CLI interface, flag parsing, password input
 ├── crypto.go        # Argon2id KDF, XChaCha20-Poly1305 encrypt/decrypt
@@ -298,117 +301,108 @@ bak-cli/
 ├── wipe.go          # Secure file/directory deletion (multi-pass overwrite)
 └── memguard.go      # mlock() memory locking, burn() secure zeroing
 ```
-Data Flow
-```text
+## Data Flow
+```
+=== LOCK PIPELINE (Sealing) ===
 
 [Files on Disk] ──▶ [PackDirectory()] ──▶ [Serialize()] ──▶ [SHA-512 Hash]
-                                                                    │
-                                                                    ▼
-[User Input] ──▶ [Argon2id] ──▶ [Encrypt()] ──▶ [vault.bak]
-     │                                                   
-     └── [mlock()] password & key in RAM
-                                                          
-[vault.bak] ──▶ [Decrypt()] ──▶ [Verify SHA-512] ──▶ [Deserialize()]
-                                                              │
-                                                              ▼
-                                                    [UnpackDirectory()]
-                                                              │
-                                                              ▼
-                                                     [Restored Files]
+                                                                  │
+                                                                  ▼
+[User Input]    ──▶ [Argon2id]         ──▶ [Encrypt()]   ──▶ [vault.bak]
+     │
+     └──▶ [mlock()] Password & Key locked in RAM
+
+
+=== UNLOCK PIPELINE (Restoring) ===
+
+[vault.bak]     ──▶ [Decrypt()]        ──▶ [Verify SHA-512] ──▶ [Deserialize()]
+                                                                      │
+                                                                      ▼
+                                                            [UnpackDirectory()]
+                                                                      │
+                                                                      ▼
+                                                             [Restored Files]
 ```
- Threat Model
-What bak-cli Protects Against
-Threat	Protection
-Passive forensic analysis	Zero-branding — file looks like random data
-Active forensic analysis	Memory locked, zeroed after use
-Bruteforce attacks	Argon2id (64MB), authenticated encryption
-Password coercion	Duress mode — instant destruction
-Swap/file recovery	mlock() prevents swap, 3-pass overwrite
-Data tampering	Poly1305 MAC + SHA-512 integrity
-Nonce reuse	24-byte XChaCha nonce, generated per encryption
-What bak-cli Does NOT Protect Against
+## Threat Model
 
-    Keyloggers — Hardware or software keyloggers can capture your password
+### What bak-cli Protects Against
 
-    Cold boot attacks — RAM can be read before it decays if attacker has physical access within minutes
+| Threat | Protection Mechanism |
+| :--- | :--- |
+| **Passive forensic analysis** | **Zero-branding:** The output file contains no magic bytes or headers and is indistinguishable from pure random noise (high entropy). |
+| **Active forensic analysis** | **Anti-forensics RAM protection:** Sensitive data is locked in memory and explicitly zeroed out immediately after use. |
+| **Brute-force attacks** | **Argon2id KDF:** Configured with memory-hard parameters (64MB) to significantly increase the cost of GPU/ASIC cluster attacks. |
+| **Password coercion** | **Duress mode:** Entering a pre-configured panic password triggers an immediate, unrecoverable secure wipe of the vault. |
+| **Swap / File recovery** | **System-level mitigations:** `mlock()` prevents keys from leaking to swap space, and original files are overwritten using a 3-pass shredding process. |
+| **Data tampering** | **Authenticated Encryption (AEAD):** Poly1305 MAC coupled with an internal SHA-512 payload hash ensures any unauthorized modifications are detected before decryption. |
+| **Nonce reuse** | **Extended Nonce:** XChaCha20 uses a 24-byte random nonce, practically eliminating the risk of collision even across millions of vaults. |
 
-    Evil maid attacks — Someone could replace the binary with a backdoored version
+### What bak-cli Does NOT Protect Against
 
-    Traffic analysis — The file size may correlate with the original directory size
+While `bak-cli` is designed with paranoia in mind, it operates under standard cryptographic assumptions. It cannot protect you against the following vectors:
 
-    Compromised OS — If your kernel is compromised, mlock() can be bypassed
+* **Keyloggers:** Hardware or software-based keyloggers running on your system can log your master password during entry.
+* **Cold Boot Attacks:** If an attacker gains physical access to your machine while it's running (or within minutes of a shutdown), RAM modules can be frozen and read to extract cryptographic keys before they decay.
+* **Evil Maid Attacks:** An adversary with physical access to your device could replace the compiled `bak-cli` binary in `/usr/bin/` with a backdoored version that leaks passwords or keys.
+* **Traffic / Size Analysis:** The encrypted vault size correlates closely with the original directory size. If an adversary knows you have a folder that is exactly 42.7 MB, they might infer that a 42.7 MB vault corresponds to that folder.
+* **Compromised OS / Kernel:** If your operating system kernel is compromised or running rootkits, system calls like `mlock()` can be bypassed, hooks can be placed on memory, and the process can be fully inspected.
 
- Comparison with Alternatives
-vs tar + gpg
+## Comparison with Alternatives
+
+### vs `tar` + `gpg`
 ```bash
-
 # Traditional approach
 tar czf - ~/secrets | gpg --symmetric --cipher-algo AES256 > secrets.tar.gz.gpg
 ```
-Problems:
 
-    gpg leaves key material in swap
+**Flaws & Vulnerabilities:**
+* **Information Leakage:** `tar` headers (metadata, original filenames, structures, and permissions) are often partially exposed or structured in a way that assists cryptanalysis before decryption.
+* **No RAM Protection:** `gpg` does not strictly prevent key material or decrypted blocks from leaking into the system's swap space.
+* **No Memory Hardening:** Standard GPG setups often rely on configurations that vary wildly, sometimes falling back to weaker or outdated Key Derivation Functions (KDFs).
+* **Forensic Footprint:** The output file contains clear magic bytes identifying it explicitly as GPG-encrypted data.
+* **No Safe Erasure:** It completely lacks built-in mechanism for forensic-grade deletion of the original directory.
 
-    Tar headers are visible before decryption (ustar, filenames, sizes)
+---
 
-    No memory protection
-
-    No secure deletion of originals
-
-    GPG configuration varies wildly (some use weak KDFs)
-
-    File is identifiable as GPG data
-
-vs 7-Zip
+### vs `7-Zip`
 ```bash
-
+# Encrypting with header encryption enabled
 7z a -p -mhe=on secrets.7z ~/secrets
 ```
-Problems:
 
-    7z format has recognizable headers even with -mhe=on
+**Flaws & Vulnerabilities:**
+* **Signature Leakage:** Even with `-mhe=on` (header encryption), the `7z` format still writes recognizable signatures at the start of the file, making it a target for automated forensic filters.
+* **Weak KDF Standards:** By default, 7-Zip utilizes PBKDF2 with relatively low iteration counts, rendering it significantly more vulnerable to modern GPU/ASIC brute-force clusters compared to Argon2id.
+* **No Memory Defense:** Lacks `mlock()` or anti-forensic RAM wiping primitives (`burn`).
+* **Attack Surface:** Built on a massive, legacy C++ codebase, which presents a substantially larger attack surface (buffer overflows, memory corruption) than a minimal Go binary.
+* **No Duress Primitives:** Does not support emergency panic/coercion passwords.
 
-    No memory locking
+---
 
-    No duress mode
+### vs `VeraCrypt`
 
-    Uses PBKDF2 with low iteration count by default
+**Flaws & Vulnerabilities:**
+* **Infrastructure Overhead:** Requires specific kernel modules or administrative privileges, making it a heavy dependency that isn't always available on minimal or live environments.
+* **Volume Footprint:** Standard VeraCrypt volumes contain specific headers. While hidden volumes exist, managing them safely introduces high user-error risks.
+* **Rigid Architecture:** Containers use fixed sizes. You either waste massive amounts of disk space pre-allocating a huge volume, or you risk running out of space as your folder grows.
+* **No Native Shredding:** It does not handle the automated, multi-pass secure erasure of your source folders after a volume is created.
 
-    C++ codebase (larger attack surface)
+---
 
-vs VeraCrypt
+## Why bak-cli Wins for Directory Archiving
 
-Problems:
+* **Purpose-Built:** It doesn't try to be a general-purpose archiver or a multi-platform virtual disk. It does exactly one thing: seals directories securely.
+* **Minimal Attack Surface:** Comprising roughly ~500 lines of clean, readable, and modern Go code. It can be fully audited in less than an afternoon.
+* **Paranoid Defaults:** Zero complex configuration files or risky CLI flags. The maximum security layer (Argon2id + XChaCha20-Poly1305 + Memguard) is hardcoded and fully non-negotiable.
+* **Zero Trust Architecture:** It operates under the strict assumption that the output file will be captured, analyzed, and processed by powerful adversaries using professional forensic suites.
+* **Plausible Deniability:** The final vault file looks precisely like random noise gathered from `/dev/urandom`. Furthermore, entering the pre-configured duress password completely destroys the evidence on the spot with a secure overwrite. 
 
-    Requires kernel module (not always available)
-
-    Container files have VC headers
-
-    Fixed container size (wastes space or risks overflow)
-
-    Overkill for single-directory archiving
-
-    No built-in secure deletion of originals
-
-Why bak-cli Wins for Directory Archiving
-
-    Purpose-built — Just seals directories, nothing else
-
-    Minimal attack surface — ~500 lines of Go, auditable in an afternoon
-
-    Paranoid defaults — Maximum security, no configuration needed
-
-    Zero trust — Assumes the encrypted file will be inspected by adversaries
-
-    Plausible deniability — Vault file looks like random noise, duress password destroys evidence
-
-  Development
-Building
+## Development
+### Building
 ```bash
-
 go build -o bak-cli
 ```
-Running Tests
+### Running Tests
 ```bash
 
 # Unit tests
@@ -417,56 +411,72 @@ go test ./...
 # Integration test (creates and restores a test directory)
 ./test/integration.sh
 ```
-Memory Leak Check
+### Memory Leak Check
 ```bash
 
 # Check if passwords persist in memory after Burn()
 go build -gcflags="-m"  # Check for escape analysis
 # Use pprof or Valgrind for deeper analysis
 ```
-Contributing
+##  Contributing
 
-    Fork the repository
+We welcome contributions from the community! Since `bak-cli` is licensed under the **GPL-3.0 License**, any forks, modifications, or derivative works must also remain open-source and free under the same terms.
 
-    Create a feature branch
+### How to Contribute
 
-    Ensure all tests pass
+1. **Fork the Repository:** Create your own copy of the project on GitHub.
+2. **Create a Feature Branch:** Group your changes into a dedicated branch:
+   ```bash
+   git checkout -b feature/amazing-secure-feature
+   ```
+3. **Ensure All Tests Pass:** Run unit and integration tests before committing:
+   ```bash
+   go test ./...
+   ```
+4. **Submit a Pull Request (PR):** Open a PR against the `main` branch with a detailed description of your changes, architecture adjustments, and security implications.
 
-    Submit a PR with detailed description
+---
 
-Areas for contribution:
+### Roadmap & Areas for Contribution
 
-    Windows support (different mlock API)
+If you want to help make `bak-cli` even more robust and versatile, consider picking up one of these highly anticipated features:
 
-    Compression layer (zstd before encryption)
+* **Windows Support:** Porting the core memory-locking features (`mlock`) and password-hiding terminals to Windows-specific APIs (using `VirtualLock` and Windows system calls).
+* **Compression Layer:** Integrating a high-performance, stream-based compression layer (like `zstd` or `lz4`) to shrink the data payload *before* it passes through the encryption pipeline.
+* **Shamir's Secret Sharing:** Adding an option to split the derived master key into multiple shards ($N$ of $M$ parts). The vault would require a specific threshold of key files to be present simultaneously to unlock.
+* **Hardware Security Keys:** Implementing support for physical tokens (like YubiKey via HMAC-SHA1 challenge-response or FIDO2/U2F) to bind encryption keys to hardware, protecting against pure software-based master password compromise.
+ 
+## Disclaimer
 
-    Shamir's Secret Sharing (split key across multiple files)
+This tool uses strong cryptography and advanced anti-forensic techniques. **Test thoroughly with non-critical data before trusting it with your primary backups.** Always verify that you can successfully restore your files before allowing the tool to execute the automated deletion process.
 
-    Hardware security key support (YubiKey, etc.)
+The secure deletion feature (`WipeDirectory`) attempts to physically overwrite data to prevent file recovery. However, **it cannot guarantee 100% unrecoverability on all modern hardware and storage configurations**, specifically:
+* **SSDs / NVMe drives:** Internal flash controllers utilize Wear Leveling, Over-Provisioning, and Translation Layers (FTL) that abstract physical sectors, meaning rewritten files may leave stale data in hidden blocks.
+* **Journaling Filesystems:** Filesystems like `ext4`, `XFS`, or `APFS` may write metadata or file fragments to a journal log before committing them to the primary sectors.
+* **RAID Arrays & Network Shares:** Multi-disk mirroring and remote protocols distribute data in ways that bypass local sector-overwrite operations.
 
- Disclaimer
+**For maximum security and operational peace of mind:**
+1. Combine this tool with Full-Disk Encryption (e.g., **LUKS** on Linux, **FileVault** on macOS).
+2. Store your `.bak` vaults only on trusted, pre-encrypted file containers or physical volumes.
+3. Never enter your master passwords on untrusted hardware, compromised hosts, or live-monitored environments.
+4. Always utilize the `--verbose` flag to double-check that SHA-512 hashes match perfectly after restoration.
 
-This tool uses strong cryptography and anti-forensic techniques. Test thoroughly before trusting it with real data. Always verify that you can successfully restore your files before deleting the originals.
+---
 
-The secure deletion feature (WipeDirectory) attempts to prevent file recovery, but cannot guarantee 100% unrecoverability on all filesystems (especially SSDs with wear leveling, journaling filesystems, or RAID arrays). For maximum security:
+## License
 
-    Use full-disk encryption (LUKS, FileVault)
+This project is licensed under the **GPL-3.0 License** — see the [LICENSE](LICENSE) file for the full text and open-source compliance requirements.
 
-    Store vaults on encrypted volumes
+---
 
-    Never enter passwords on untrusted hardware
+## Star This Project
 
-    Verify SHA-512 hashes after restoration
+If you find this tool useful or if it fits your local security workflow, **consider starring it on GitHub!** It increases visibility and helps other privacy-focused developers discover alternative, zero-branding encryption utilities.
 
- License
+---
 
-GPL-3.0 license  — see LICENSE for details.
-
- Star This Project
-
-If you find this tool useful, consider starring it on GitHub. It helps others discover privacy-focused tools.
-
-Remember: In a world of mass surveillance, encryption is not a crime — it's a responsibility.
-
-Made with paranoia and Go.
-"Trust no one. Encrypt everything."
+>  **Remember:** In a world of ubiquitous mass surveillance, encryption is not a crime — it is a fundamental responsibility.
+> 
+> *Made with high-grade paranoia and pure Go.*
+> 
+> **"Trust no one. Encrypt everything."**
