@@ -1,9 +1,9 @@
 # bak-cli — Zero-Branding Secure Archive Utility
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.26.3-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![Security: gosec passing](https://img.shields.io/badge/Security-gosec%20passing-success.svg)](docs/SecurityAudit_RemediationReport.md)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey)]()
-
 A paranoid-grade CLI tool for packing any directory into a single encrypted binary blob with **zero metadata leakage**, followed by forensic-grade secure deletion of the original files.
 
 > **Think:** You have an Obsidian vault, a `~/secrets` folder, or a project you want to **seal** into indistinguishable random bytes. No tar headers. No ZIP magic numbers. No JSON structure. Just noise. This tool makes that noise reversible — but only with your password.
