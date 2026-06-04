@@ -4,6 +4,7 @@
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Security: gosec passing](https://img.shields.io/badge/Security-gosec%20passing-success.svg)](docs/SecurityAudit_RemediationReport.md)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey)]()
+
 A paranoid-grade CLI tool for packing any directory into a single encrypted binary blob with **zero metadata leakage**, followed by forensic-grade secure deletion of the original files.
 
 > **Think:** You have an Obsidian vault, a `~/secrets` folder, or a project you want to **seal** into indistinguishable random bytes. No tar headers. No ZIP magic numbers. No JSON structure. Just noise. This tool makes that noise reversible — but only with your password.
@@ -281,6 +282,8 @@ sudo mv bak-cli /usr/local/bin/
 ./bak-cli --unlock vault.bak --verbose
 ```
 
+> There are plans to change the operating principle to a normal duress-pass that will work natively with a regular unlock. So for now //TODO
+
 **What happens:**
 1. Reads salt from the first 16 bytes
 2. Asks for password
@@ -542,12 +545,12 @@ I prefer decentralized and encrypted communication channels.
 
 ## Funding
 
-If LastChance helps your OpSec, consider supporting the project.
+If bak-cli helps your OpSec, consider supporting the project.
 Cryptocurrency	Address
 
 ## Support the Project 
 
-If you find **LastChance** useful, consider supporting its development:
+If you find **bak-cli** useful, consider supporting its development:
 
 | Asset | Address |
 | :--- | :--- |
