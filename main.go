@@ -1,279 +1,130 @@
 package main
 
 import (
-	"crypto/rand"
-	"errors"
-	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
-	"syscall"
+	"strings"
 
-	"golang.org/x/term"
-)
-
-const (
-	vaultFileName = "vault.bak"
-)
-
-var (
-	// Flags
-	lockFlag    = flag.String("lock", "", "Directory to lock/seal")
-	unlockFlag  = flag.String("unlock", "", "Vault file to unlock")
-	duressFlag  = flag.String("duress", "", "Duress password (triggers secure deletion)")
-	outputFlag  = flag.String("output", "", "Output file for vault (default: vault.bak in current dir)")
-	verboseFlag = flag.Bool("verbose", false, "Verbose output")
+	"github.com/NablaShell/bak-cli/internal/cli"
+	"github.com/NablaShell/bak-cli/internal/crypto"
+	"github.com/NablaShell/bak-cli/internal/vault"
+	"github.com/NablaShell/bak-cli/internal/wipe"
 )
 
 func main() {
-	flag.Parse()
+	args := cli.Parse()
 
-	// Validate arguments
-	if *lockFlag != "" && *unlockFlag != "" {
-		fmt.Fprintln(os.Stderr, "Error: cannot use both --lock and --unlock simultaneously")
+	if args.Lock != "" && args.Unlock != "" {
+		fmt.Fprintln(os.Stderr, "Specify --lock or --unlock, not both.")
+		os.Exit(1)
+	}
+	if args.Lock == "" && args.Unlock == "" {
+		fmt.Fprintln(os.Stderr, "Use --lock <dir> or --unlock <file>")
 		os.Exit(1)
 	}
 
-	if *lockFlag == "" && *unlockFlag == "" {
-		fmt.Fprintln(os.Stderr, "Error: must specify either --lock or --unlock")
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	var err error
-	if *lockFlag != "" {
-		err = handleLock(*lockFlag)
+	if args.Lock != "" {
+		lock(args)
 	} else {
-		err = handleUnlock(*unlockFlag)
+		unlock(args)
+	}
+}
+
+func lock(args *cli.Args) {
+	if _, err := os.Stat(args.Lock); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
+	pass, err := cli.ReadConfirmed()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-}
+	defer crypto.Burn(pass)
 
-func handleLock(dir string) error {
-	// Validate directory exists
-	info, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("cannot access directory %s: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
-	}
+	chunkSize := detectChunkSize()
 
-	// Get absolute path for better directory name extraction
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return fmt.Errorf("failed to resolve path: %w", err)
-	}
+	fmt.Fprintf(os.Stderr, "Chunk size: %d MB\n", chunkSize/(1024*1024))
 
-	// Get password
-	fmt.Print("Enter password: ")
-	password, err := term.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		return fmt.Errorf("failed to read password: %w", err)
-	}
-	fmt.Println()
-
-	// Confirm password
-	fmt.Print("Confirm password: ")
-	confirmPassword, err := term.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		return fmt.Errorf("failed to read password confirmation: %w", err)
-	}
-	fmt.Println()
-
-	if string(password) != string(confirmPassword) {
-		Burn(password)
-		Burn(confirmPassword)
-		return errors.New("passwords do not match")
-	}
-
-	// Secure password memory
-	if err := LockMemory(password); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to lock memory: %v\n", err)
-	}
-	defer func() {
-		UnlockMemory(password)
-		Burn(password)
-	}()
-
-	defer Burn(confirmPassword)
-
-	// Pack directory
-	if *verboseFlag {
-		fmt.Printf("Packing directory: %s\n", absDir)
-	}
-	entries, dirName, err := PackDirectory(absDir)
-	if err != nil {
-		return err
-	}
-	
-	if *verboseFlag {
-		fmt.Printf("Found %d files in '%s'\n", len(entries), dirName)
-	}
-
-	// Serialize entries with metadata
-	payload, hashSum := Serialize(entries, dirName)
-	
-	if *verboseFlag {
-		fmt.Printf("Payload size: %d bytes\n", len(payload))
-		fmt.Printf("SHA-512: %x\n", hashSum)
-	}
-
-	// Generate salt and derive key
-	salt := make([]byte, argonSaltLen)
-	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("failed to generate salt: %w", err)
-	}
-
-	key, err := DeriveKey(password, salt)
-	if err != nil {
-		return err
-	}
-	defer Burn(key)
-
-	// Encrypt payload
-	encrypted, err := Encrypt(payload, key)
-	if err != nil {
-		return err
-	}
-
-	// Construct vault file
-	vault := make([]byte, 0, argonSaltLen+len(encrypted))
-	vault = append(vault, salt...)
-	vault = append(vault, encrypted...)
-
-	// Write vault file
-	outputPath := *outputFlag
-	if outputPath == "" {
-		outputPath = vaultFileName
-	}
-
-	if *verboseFlag {
-		fmt.Printf("Writing vault to: %s\n", outputPath)
-	}
-	if err := os.WriteFile(outputPath, vault, 0600); err != nil {
-		return fmt.Errorf("failed to write vault file: %w", err)
-	}
-
-	// Securely delete original directory
-	if *verboseFlag {
-		fmt.Printf("Securely deleting original directory: %s\n", absDir)
-	}
-	if err := WipeDirectory(absDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to securely delete directory: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Directory may not have been fully wiped. Manual cleanup required.\n")
-		return fmt.Errorf("secure deletion failed: %w", err)
-	}
-
-	fmt.Printf("Directory '%s' successfully locked and secured.\n", dirName)
-	if *verboseFlag {
-		fmt.Printf("Vault file: %s\n", outputPath)
-	}
-	return nil
-}
-
-func handleUnlock(vaultPath string) error {
-	// Read vault file
-	vault, err := os.ReadFile(vaultPath)
-	if err != nil {
-		return fmt.Errorf("cannot read vault file %s: %w", vaultPath, err)
-	}
-
-	// Validate vault size
-	if len(vault) < argonSaltLen+xchachaNonceLen {
-		return errors.New("invalid vault file: too small")
-	}
-
-	// Extract salt and encrypted data
-	salt := vault[:argonSaltLen]
-	encrypted := vault[argonSaltLen:]
-
-	// Get password
-	fmt.Print("Enter password: ")
-	password, err := term.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		return fmt.Errorf("failed to read password: %w", err)
-	}
-	fmt.Println()
-
-	// Secure password memory
-	if err := LockMemory(password); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to lock memory: %v\n", err)
-	}
-	defer func() {
-		UnlockMemory(password)
-		Burn(password)
-	}()
-
-	// Check for duress password
-	if *duressFlag != "" && string(password) == *duressFlag {
-		fmt.Println("⚠️  Duress password detected! Securely deleting vault...")
-		if err := WipeFile(vaultPath); err != nil {
-			return fmt.Errorf("failed to securely delete vault: %w", err)
-		}
-		fmt.Println("Vault successfully destroyed.")
-		os.Exit(0)
-		return nil
-	}
-
-	// Derive key
-	key, err := DeriveKey(password, salt)
-	if err != nil {
-		return err
-	}
-	defer Burn(key)
-
-	// Decrypt
-	payload, err := Decrypt(encrypted, key)
-	if err != nil {
-		// Authentication failed - likely wrong password
-		fmt.Fprintln(os.Stderr, "❌ Authentication failed: incorrect password or corrupted vault")
+	if err := vault.Pack(args.Lock, args.Output, pass, chunkSize); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
-		return nil
 	}
 
-	// Deserialize entries with metadata
-	entries, metadata, err := Deserialize(payload)
+	fmt.Fprintln(os.Stderr, "Wiping source...")
+	if err := wipe.Dir(args.Lock); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: wipe failed: %v\n", err)
+	}
+
+	fmt.Println("Done.")
+}
+
+func unlock(args *cli.Args) {
+	if _, err := os.Stat(args.Unlock); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	pass, err := cli.ReadPassword("Password: ")
 	if err != nil {
-		return fmt.Errorf("failed to deserialize vault contents: %w", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
+	defer crypto.Burn(pass)
 
-	if *verboseFlag {
-		fmt.Printf("Vault contents: %d files\n", len(entries))
-		fmt.Printf("Original directory: %s\n", metadata.DirName)
-		fmt.Printf("Integrity hash: %x\n", metadata.Hash)
-	}
-
-	// Create output directory using original name
-	outputDir := metadata.DirName
-	
-	// Check if directory already exists
-	if _, err := os.Stat(outputDir); err == nil {
-		fmt.Printf("⚠️  Directory '%s' already exists. ", outputDir)
-		fmt.Print("Overwrite? (y/N): ")
-		var response string
-		fmt.Scanln(&response)
-		if response != "y" && response != "Y" {
-			return fmt.Errorf("restore cancelled by user")
+	// Duress.
+	if args.Duress != "" && string(pass) == args.Duress {
+		if !cli.Confirm("Duress password detected. Destroy vault?") {
+			fmt.Println("Cancelled.")
+			return
 		}
-		// Remove existing directory
-		if err := os.RemoveAll(outputDir); err != nil {
-			return fmt.Errorf("failed to remove existing directory: %w", err)
+		if err := wipe.File(args.Unlock); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Vault destroyed.")
+		return
+	}
+
+	// "." — распаковать в текущую директорию
+	if err := vault.Unpack(args.Unlock, ".", pass); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Done.")
+}
+
+// detectChunkSize returns a chunk size based on available memory.
+func detectChunkSize() int {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 256 * 1024 * 1024
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemAvailable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				var kb int64
+				// Проверяем, что Sscanf успешно распарсил ровно 1 элемент (G104)
+				n, err := fmt.Sscanf(fields[1], "%d", &kb)
+				if err != nil || n != 1 {
+					// Если парсинг упал, выходим на дефолтные 256МБ
+					return 256 * 1024 * 1024
+				}
+
+				chunk := int(kb*1024) / 4
+				if chunk < 16*1024*1024 {
+					chunk = 16 * 1024 * 1024
+				}
+				if chunk > 1024*1024*1024 {
+					chunk = 1024 * 1024 * 1024
+				}
+				return chunk
+			}
 		}
 	}
-
-	if *verboseFlag {
-		fmt.Printf("Restoring %d files to: %s\n", len(entries), outputDir)
-	}
-	
-	if err := UnpackDirectory(entries, outputDir); err != nil {
-		return err
-	}
-
-	fmt.Printf("✅ Vault successfully unlocked and restored to '%s'\n", outputDir)
-	return nil
+	return 256 * 1024 * 1024
 }

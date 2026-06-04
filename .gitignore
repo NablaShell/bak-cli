@@ -1,0 +1,22 @@
+# Binaries
+bak-cli
+
+# Test files
+test_*
+*.bak
+project_code.txt
+
+# Go
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
