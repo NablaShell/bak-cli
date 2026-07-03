@@ -554,8 +554,8 @@ If you find **bak-cli** useful, consider supporting its development:
 
 | Asset | Address |
 | :--- | :--- |
-| **BTC** | 8Arc4tRdGAKcWNMLCb7mj2fnYqWgQGhTTgR7FEGaZpL2Pw6MNSwqsGMUGpeQGURgQbDoyxU1ASKMP7dKBJq8yJgCSwCgPYe |
-| **XMR** | bc1qktffxm3579v6zs6mpms4yvwp6m067nkggd8ach |
+| **BTC** | bc1qktffxm3579v6zs6mpms4yvwp6m067nkggd8ach |
+| **XMR** | 8Arc4tRdGAKcWNMLCb7mj2fnYqWgQGhTTgR7FEGaZpL2Pw6MNSwqsGMUGpeQGURgQbDoyxU1ASKMP7dKBJq8yJgCSwCgPYe |
 
 ---
 
